@@ -1,0 +1,30 @@
+# Configuration obsidian-mcp
+# Copy this file to settings.yaml and update with your values
+
+vault:
+  path: "/path/to/your/obsidian/vault"
+
+embedding:
+  model: "voyage-3"
+  dimensions: 1024
+
+reranking:
+  model: "rerank-v3.5"
+  top_n: 10
+
+database:
+  path: "./chroma_db"
+  collection: "obsidian_notes"
+
+search:
+  default_top_k: 10
+  bm25_weight: 0.3
+  context_window: 2
+
+indexing:
+  incremental: true
+  file_extensions:
+    - ".md"
+  exclude_folders:
+    - ".obsidian"
+    - ".trash"

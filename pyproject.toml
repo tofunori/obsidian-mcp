@@ -1,0 +1,27 @@
+[project]
+name = "obsidian-mcp"
+version = "0.1.0"
+description = "MCP server pour vault Obsidian avec recherche semantique"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastmcp>=2.0.0",
+    "chromadb>=0.5.0",
+    "voyageai>=0.3.0",
+    "cohere>=5.0.0",
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0.0",
+    "rank-bm25>=0.2.2",
+    "rich>=13.0.0",
+]
+
+[project.scripts]
+obsidian-mcp = "src.server:main"
+obsidian = "src.menu:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
