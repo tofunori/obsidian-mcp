@@ -42,16 +42,48 @@ def extract_wikilinks(content: str) -> list[str]:
     - [[note]]
     - [[note|alias]]
     - [[folder/note]]
+
+    Exclut:
+    - Tests bash [[ -f file ]]
+    - Code entre crochets
     """
     pattern = r'\[\[([^\]|]+)(?:\|[^\]]+)?\]\]'
     matches = re.findall(pattern, content)
+
+    # Patterns a exclure (bash tests, code, etc.)
+    exclude_patterns = [
+        r'^[\s!-]',           # Commence par espace, ! ou -
+        r'^\$',               # Variables shell $var
+        r'^["\']',            # Commence par quote
+        r'\s(==|!=|<=|>=)\s', # Operateurs de comparaison
+        r'^https?://',        # URLs
+        r'\.(jpg|jpeg|png|gif|svg|pdf|mp3|mp4|webp)($|#)',  # Fichiers media/PDF (embeds et annotations)
+        r'\.pdf#',            # Annotations PDF (Zotero, etc.)
+        r'^[0-9]+$',          # Nombres seuls (faux positifs)
+    ]
 
     # Normaliser les chemins (enlever .md si present)
     links = []
     for match in matches:
         link = match.strip()
+
+        # Verifier si c'est un faux positif
+        is_false_positive = False
+        for exc_pattern in exclude_patterns:
+            if re.search(exc_pattern, link, re.IGNORECASE):
+                is_false_positive = True
+                break
+
+        if is_false_positive:
+            continue
+
         if link.endswith('.md'):
             link = link[:-3]
+
+        # Ignorer les liens vides ou trop courts
+        if len(link) < 2:
+            continue
+
         links.append(link)
 
     return list(set(links))  # Deduplicate

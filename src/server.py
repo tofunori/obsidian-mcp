@@ -1,6 +1,6 @@
 """
 Serveur MCP pour vault Obsidian.
-8 outils: search, read, write, delete, move, list, backlinks, similar
+10 outils: search, read, write, delete, move, list, backlinks, similar, refresh, reload
 """
 
 import os
@@ -176,7 +176,7 @@ def rerank_results(query: str, results: list[dict], top_n: int = 10) -> list[dic
 
 
 # ============================================================================
-# MCP TOOLS (8 outils)
+# MCP TOOLS (10 outils)
 # ============================================================================
 
 @mcp.tool()
@@ -520,6 +520,157 @@ def similar(path: str, top_k: int = 5) -> str:
         output.append(f"   `{note_path}`")
 
     return "\n".join(output)
+
+
+@mcp.tool()
+def refresh() -> str:
+    """
+    Rafraichit l'index BM25 apres indexation de nouvelles notes.
+
+    Appeler apres avoir indexe de nouvelles notes via le menu CLI
+    pour que la recherche hybride les trouve immediatement.
+
+    Returns:
+        Confirmation avec nombre de notes indexees
+    """
+    global _retriever
+
+    if _retriever is not None:
+        _retriever.rebuild_index()
+        count = len(_retriever.docs)
+        logger.info(f"Index BM25 reconstruit: {count} notes")
+        return f"Index BM25 rafraichi: {count} notes indexees"
+
+    return "Index sera construit a la prochaine recherche"
+
+
+@mcp.tool()
+def index(full: bool = False) -> str:
+    """
+    Indexe les nouvelles notes directement depuis le serveur MCP.
+
+    Cette methode est preferee au CLI car elle indexe dans le meme processus,
+    evitant les problemes de cache ChromaDB entre processus.
+
+    Args:
+        full: Si True, reindexe tout le vault. Sinon, indexation incrementale.
+
+    Returns:
+        Statistiques d'indexation
+    """
+    global _retriever, _collection, _chroma_client
+    import gc
+
+    try:
+        from .indexer import ObsidianIndexer
+
+        config = get_config()
+        vault_path = config['vault']['path']
+        db_path = Path(__file__).parent.parent / config['database']['path']
+
+        logger.info(f"Indexation {'complete' if full else 'incrementale'} du vault...")
+
+        indexer = ObsidianIndexer(
+            vault_path=vault_path,
+            db_path=str(db_path)
+        )
+        stats = indexer.index_vault(incremental=not full)
+
+        # IMPORTANT: Reset les caches du serveur pour forcer le rechargement
+        # L'indexeur a son propre client ChromaDB, donc le serveur doit
+        # recreer sa collection pour voir les nouvelles donnees
+        _collection = None
+        _chroma_client = None
+        _retriever = None
+        gc.collect()
+        logger.info("Caches serveur reinitialises")
+
+        result = (
+            f"Indexation terminee:\n"
+            f"- Notes totales: {stats['total_notes']}\n"
+            f"- Indexees: {stats['indexed']}\n"
+            f"- Ignorees: {stats['skipped']}\n"
+            f"- Supprimees: {stats['deleted']}\n"
+            f"- Erreurs: {stats['errors']}"
+        )
+
+        if 'warning' in stats:
+            result += f"\n- Attention: {stats['warning']}"
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Erreur indexation: {e}")
+        return f"Erreur lors de l'indexation: {e}"
+
+
+@mcp.tool()
+def reload() -> str:
+    """
+    Recharge completement tous les caches et connexions.
+
+    Reinitialise ChromaDB, les embeddings, le retriever et le graphe.
+    NOTE: Preferer l'outil 'index' pour indexer de nouvelles notes,
+    car il evite les problemes de cache inter-processus.
+
+    Returns:
+        Confirmation du rechargement
+    """
+    import gc
+    import sqlite3
+    global _voyage_client, _cohere_client, _chroma_client, _collection, _retriever, _graph, _config
+
+    config = get_config()
+    db_path = Path(__file__).parent.parent / config['database']['path']
+
+    # Etape 1: Forcer le checkpoint WAL SQLite AVANT de fermer ChromaDB
+    sqlite_path = db_path / "chroma.sqlite3"
+    if sqlite_path.exists():
+        try:
+            conn = sqlite3.connect(str(sqlite_path))
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+            conn.close()
+            logger.info("SQLite WAL checkpoint force")
+        except Exception as e:
+            logger.warning(f"Impossible de forcer le checkpoint WAL: {e}")
+
+    # Etape 2: Supprimer explicitement les objets ChromaDB pour fermer les connexions
+    if _retriever is not None:
+        del _retriever
+    if _collection is not None:
+        del _collection
+    if _chroma_client is not None:
+        del _chroma_client
+
+    # Etape 3: Forcer le garbage collection pour liberer les ressources
+    gc.collect()
+
+    # Etape 4: Reset toutes les variables globales
+    _config = None
+    _voyage_client = None
+    _cohere_client = None
+    _chroma_client = None
+    _collection = None
+    _retriever = None
+    _graph = None
+
+    logger.info("Tous les caches reinitialises")
+
+    # Etape 5: Recreer les objets avec une vue fraiche des donnees
+    try:
+        collection = get_collection()
+        count = collection.count()
+        logger.info(f"ChromaDB recharge: {count} documents")
+
+        # Forcer la reconstruction de l'index BM25
+        retriever = get_retriever()
+        retriever.rebuild_index()
+        logger.info(f"Index BM25 reconstruit: {len(retriever.docs)} documents")
+
+        return f"Serveur recharge avec succes. {count} documents dans ChromaDB."
+    except Exception as e:
+        logger.error(f"Erreur lors du rechargement: {e}")
+        return f"Erreur lors du rechargement: {e}"
 
 
 # ============================================================================
