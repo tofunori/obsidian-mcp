@@ -4,6 +4,7 @@ Gere l'indexation incrementale des notes dans ChromaDB.
 """
 
 import os
+import gc
 import logging
 import hashlib
 from pathlib import Path
@@ -100,6 +101,35 @@ class ObsidianIndexer:
         )
         return result.embeddings
 
+    def _force_persist(self):
+        """
+        Force la persistance ChromaDB en recreant le client.
+
+        ChromaDB utilise SQLite avec WAL. Les donnees sont ecrites dans le WAL
+        mais pas immediatement checkpoint vers le fichier principal. Un autre
+        processus peut ne pas voir les donnees non-checkpoint.
+
+        Cette methode force le checkpoint en fermant et recreant le client.
+        """
+        collection_name = self.collection_name
+        db_path = self.db_path
+
+        # Supprimer les references pour forcer la fermeture
+        del self.collection
+        del self.chroma
+        gc.collect()
+
+        # Recreer le client (force le checkpoint WAL)
+        self.chroma = chromadb.PersistentClient(
+            path=str(db_path),
+            settings=Settings(anonymized_telemetry=False)
+        )
+        self.collection = self.chroma.get_or_create_collection(
+            name=collection_name,
+            metadata={"hnsw:space": "cosine"}
+        )
+        logger.info("ChromaDB persiste (checkpoint WAL force)")
+
     def get_indexed_hashes(self) -> dict[str, str]:
         """Recupere les hashes des notes deja indexees."""
         try:
@@ -185,6 +215,19 @@ class ObsidianIndexer:
         logger.info("Reconstruction du graphe de liens...")
         self.graph.rebuild_from_notes(notes)
         self.graph.save(str(self.graph_path))
+
+        # Verification post-indexation
+        db_count = self.collection.count()
+        expected = stats['total_notes']
+        if db_count != expected:
+            diff = expected - db_count
+            logger.warning(f"Incoherence detectee: {db_count} documents dans ChromaDB, {expected} notes dans le vault (manquantes: {diff})")
+            stats['warning'] = f"{diff} notes non indexees - relancer une indexation complete"
+        else:
+            logger.info(f"Verification OK: {db_count} documents")
+
+        # Forcer la persistance pour que d'autres processus voient les donnees
+        self._force_persist()
 
         stats['finished_at'] = datetime.now().isoformat()
         return stats

@@ -95,6 +95,9 @@ def menu_index(full: bool = False):
 
     console.print(table)
 
+    if 'warning' in stats:
+        console.print(f"\n[yellow]Attention: {stats['warning']}[/yellow]")
+
 
 def menu_status():
     """Affiche le statut."""
