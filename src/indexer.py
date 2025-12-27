@@ -170,13 +170,13 @@ class ObsidianIndexer:
         stats['total_notes'] = len(notes)
         logger.info(f"Trouve {len(notes)} notes")
 
-        # Hashes existants pour incremental
-        existing_hashes = self.get_indexed_hashes() if incremental else {}
+        # Hashes existants (toujours recuperer pour detecter les suppressions)
+        existing_hashes = self.get_indexed_hashes()
 
         # Chemins actuels pour detecter les suppressions
         current_paths = {note['path'] for note in notes}
 
-        # Detecter les notes supprimees
+        # Detecter les notes supprimees (documents orphelins dans ChromaDB)
         for path in list(existing_hashes.keys()):
             if path not in current_paths:
                 try:

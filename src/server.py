@@ -1,6 +1,6 @@
 """
 Serveur MCP pour vault Obsidian.
-10 outils: search, read, write, delete, move, list, backlinks, similar, refresh, reload
+12 outils: search, read, write, delete, move, list, backlinks, similar, refresh, index, clear, reload
 """
 
 import os
@@ -176,7 +176,69 @@ def rerank_results(query: str, results: list[dict], top_n: int = 10) -> list[dic
 
 
 # ============================================================================
-# MCP TOOLS (10 outils)
+# HELPER FUNCTIONS
+# ============================================================================
+
+def _index_single_note(note_path: str) -> str:
+    """
+    Indexe une seule note dans ChromaDB.
+
+    Plus rapide que l'indexation complete du vault.
+    Utilise pour l'auto-indexation apres write.
+    """
+    global _retriever, _collection, _chroma_client
+    import gc
+    from .note_parser import parse_note
+
+    config = get_config()
+    vault_path = Path(config['vault']['path'])
+
+    # Parser la note
+    note = parse_note(note_path)
+    if not note:
+        return "echec parsing"
+
+    # Calculer le vault_path relatif
+    try:
+        rel_path = Path(note_path).relative_to(vault_path)
+        vault_path_str = str(rel_path)
+    except ValueError:
+        vault_path_str = Path(note_path).name
+
+    # Generer l'embedding
+    voyage = get_voyage_client()
+    text = note['content'][:8000]  # Limite pour l'embedding
+    result = voyage.embed(texts=[text], model="voyage-3", input_type="document")
+    embedding = result.embeddings[0]
+
+    # Metadata
+    metadata = {
+        "title": note['title'],
+        "path": note_path,
+        "vault_path": vault_path_str,
+        "tags": ",".join(note['tags']) if note['tags'] else "",
+        "wikilinks": ",".join(note['wikilinks'][:20]) if note['wikilinks'] else "",
+        "mtime": str(Path(note_path).stat().st_mtime)
+    }
+
+    # Upsert dans ChromaDB
+    collection = get_collection()
+    collection.upsert(
+        ids=[vault_path_str],
+        embeddings=[embedding],
+        documents=[text],
+        metadatas=[metadata]
+    )
+
+    # Reset le retriever pour qu'il rebuild l'index BM25
+    _retriever = None
+    gc.collect()
+
+    return "ok"
+
+
+# ============================================================================
+# MCP TOOLS (11 outils)
 # ============================================================================
 
 @mcp.tool()
@@ -301,7 +363,8 @@ def read(path: str) -> str:
 def write(
     path: str,
     content: str,
-    mode: str = "replace"
+    mode: str = "replace",
+    auto_index: bool = True
 ) -> str:
     """
     Cree ou modifie une note.
@@ -310,6 +373,7 @@ def write(
         path: Chemin de la note (relatif au vault)
         content: Contenu a ecrire
         mode: "create" (nouvelle note), "replace" (remplacer), "append" (ajouter)
+        auto_index: Indexer automatiquement apres ecriture (defaut: True)
 
     Returns:
         Confirmation ou erreur
@@ -328,18 +392,29 @@ def write(
             if note_path.exists():
                 return f"La note existe deja: {path}. Utilisez mode='replace' pour remplacer."
             note_path.write_text(content, encoding='utf-8')
-            return f"Note creee: {path}"
+            result = f"Note creee: {path}"
 
         elif mode == "append":
             existing = ""
             if note_path.exists():
                 existing = note_path.read_text(encoding='utf-8')
             note_path.write_text(existing + "\n" + content, encoding='utf-8')
-            return f"Contenu ajoute a: {path}"
+            result = f"Contenu ajoute a: {path}"
 
         else:  # replace
             note_path.write_text(content, encoding='utf-8')
-            return f"Note mise a jour: {path}"
+            result = f"Note mise a jour: {path}"
+
+        # Auto-indexation si activee
+        if auto_index:
+            try:
+                index_result = _index_single_note(str(note_path))
+                result += f" [Auto-indexe: {index_result}]"
+            except Exception as e:
+                logger.warning(f"Auto-indexation echouee: {e}")
+                result += f" [Auto-indexation echouee: {e}]"
+
+        return result
 
     except Exception as e:
         return f"Erreur ecriture: {e}"
@@ -415,7 +490,7 @@ def list(
     Liste les notes du vault.
 
     Args:
-        folder: Filtrer par dossier (optionnel)
+        folder: Filtrer par dossier. Utiliser "/" pour les notes a la racine seulement.
         tags: Filtrer par tags, separes par virgules (optionnel)
         limit: Nombre max de resultats (defaut: 50)
 
@@ -425,12 +500,26 @@ def list(
     from .note_parser import scan_vault
 
     vault = get_vault_path()
-    scan_path = vault / folder if folder else vault
+
+    # Cas special: "/" = notes a la racine seulement (pas dans un sous-dossier)
+    root_only = folder in ("/", "root")
+
+    if root_only:
+        scan_path = vault
+    else:
+        scan_path = vault / folder if folder else vault
 
     if not scan_path.exists():
         return f"Dossier non trouve: {folder}"
 
     notes = scan_vault(str(scan_path))
+
+    # Filtrer pour racine seulement (pas de separateur dans vault_path)
+    if root_only:
+        notes = [
+            n for n in notes
+            if '\\' not in n.get('vault_path', '') and '/' not in n.get('vault_path', '')
+        ]
 
     # Filtrer par tags
     if tags:
@@ -602,6 +691,57 @@ def index(full: bool = False) -> str:
     except Exception as e:
         logger.error(f"Erreur indexation: {e}")
         return f"Erreur lors de l'indexation: {e}"
+
+
+@mcp.tool()
+def clear() -> str:
+    """
+    Vide completement la base ChromaDB et le graphe.
+
+    Utile pour nettoyer les documents orphelins ou repartir de zero.
+    Appeler index(full=True) apres pour reinitialiser.
+
+    Returns:
+        Confirmation du nettoyage
+    """
+    import gc
+    global _chroma_client, _collection, _retriever, _graph
+
+    try:
+        config = get_config()
+        db_path = Path(__file__).parent.parent / config['database']['path']
+        collection_name = config['database']['collection']
+
+        # S'assurer que le client existe
+        if _chroma_client is None:
+            get_collection()
+
+        # Supprimer la collection
+        _chroma_client.delete_collection(collection_name)
+        logger.info(f"Collection {collection_name} supprimee")
+
+        # Recreer une collection vide
+        _collection = _chroma_client.get_or_create_collection(
+            name=collection_name,
+            metadata={"hnsw:space": "cosine"}
+        )
+
+        # Supprimer le graphe
+        graph_path = db_path / "wikilink_graph.json"
+        if graph_path.exists():
+            graph_path.unlink()
+            logger.info("Graphe de liens supprime")
+
+        # Reset les caches
+        _retriever = None
+        _graph = None
+        gc.collect()
+
+        return f"Base videe. Collection '{collection_name}' recreee (0 documents). Lancez index(full=True) pour reinitialiser."
+
+    except Exception as e:
+        logger.error(f"Erreur lors du nettoyage: {e}")
+        return f"Erreur: {e}"
 
 
 @mcp.tool()
