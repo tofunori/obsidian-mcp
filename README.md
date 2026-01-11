@@ -77,7 +77,7 @@ Run as a shared HTTP server to avoid duplicating processes across Claude session
 **1. Start the HTTP server:**
 ```bash
 uv run python -m src.server_http
-# Server runs on http://127.0.0.1:8322/sse
+# Server runs on http://127.0.0.1:8322/mcp
 ```
 
 **2. Configure Claude Code** (`~/.claude.json`):
@@ -86,7 +86,7 @@ uv run python -m src.server_http
   "mcpServers": {
     "obsidian": {
       "type": "sse",
-      "url": "http://127.0.0.1:8322/sse"
+      "url": "http://127.0.0.1:8322/mcp"
     }
   }
 }
