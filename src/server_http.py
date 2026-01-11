@@ -112,8 +112,8 @@ def main():
     print("Press Ctrl+C to stop")
     print("=" * 60)
 
-    logger.info("Demarrage obsidian-mcp en mode HTTP/SSE...")
-    mcp.run(transport="sse", host="127.0.0.1", port=8322)
+    logger.info("Demarrage obsidian-mcp en mode Streamable HTTP...")
+    mcp.run(transport="http", host="127.0.0.1", port=8322)
 
 
 if __name__ == "__main__":
