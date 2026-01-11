@@ -38,12 +38,13 @@ vault:
 The recommended workflow is to use the MCP tools directly from Claude Code:
 
 ```
-1. write   -> Create or modify a note
-2. index   -> Index immediately (no restart needed)
-3. search  -> Note is instantly searchable
+1. write   -> Create or modify a note (auto-indexes by default)
+2. search  -> Note is instantly searchable
 ```
 
-This avoids ChromaDB inter-process cache issues that occur when indexing via CLI.
+Notes are automatically indexed after `write`, so manual indexing is only needed for:
+- Notes created manually in Obsidian (use `index` tool)
+- Bulk imports (use `index` with `full=True`)
 
 ### Interactive Menu
 ```bash
@@ -69,6 +70,54 @@ python obsidian-cli.py --vault "/path/to/vault" search "query"
 
 ## Claude Code Configuration
 
+### Option 1: HTTP/SSE Server (Recommended)
+
+Run as a shared HTTP server to avoid duplicating processes across Claude sessions.
+
+**1. Start the HTTP server:**
+```bash
+uv run python -m src.server_http
+# Server runs on http://127.0.0.1:8322/sse
+```
+
+**2. Configure Claude Code** (`~/.claude.json`):
+```json
+{
+  "mcpServers": {
+    "obsidian": {
+      "type": "sse",
+      "url": "http://127.0.0.1:8322/sse"
+    }
+  }
+}
+```
+
+**3. (Optional) Run as systemd service** (Linux):
+```bash
+# Create ~/.config/systemd/user/obsidian-mcp.service
+[Unit]
+Description=Obsidian MCP HTTP Server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/path/to/obsidian-mcp
+Environment="VOYAGE_API_KEY=your_key"
+Environment="COHERE_API_KEY=your_key"
+Environment="OBSIDIAN_VAULT=/path/to/vault"
+ExecStart=/path/to/uv run python -m src.server_http
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+
+# Enable and start
+systemctl --user daemon-reload
+systemctl --user enable --now obsidian-mcp
+```
+
+### Option 2: Stdio (per-session)
+
 Add to `~/.claude.json`:
 
 ```json
@@ -93,7 +142,7 @@ Add to `~/.claude.json`:
 |------|-------------|
 | `search` | Hybrid semantic search (BM25 + embeddings + reranking) |
 | `read` | Read note with metadata and frontmatter |
-| `write` | Create or update note |
+| `write` | Create or update note (auto-indexes by default) |
 | `delete` | Delete note |
 | `move` | Move or rename note |
 | `list` | List notes with folder/tag filters |
@@ -102,6 +151,20 @@ Add to `~/.claude.json`:
 | `index` | Index new/modified notes (live, no restart) |
 | `refresh` | Rebuild BM25 index from ChromaDB |
 | `reload` | Reset all caches and connections |
+
+### Auto-Indexing (Write Tool)
+
+By default, `write` automatically indexes the note after creating or modifying it:
+
+```python
+# Auto-indexes after writing (default)
+write(path="Notes/my_note.md", content="...")
+
+# Disable auto-indexing if needed
+write(path="Notes/my_note.md", content="...", auto_index=False)
+```
+
+This makes new notes instantly searchable without manual indexing.
 
 ### Index Tool
 
